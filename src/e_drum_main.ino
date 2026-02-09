@@ -10,7 +10,7 @@ bool isConnected = false;
 
 // -- classes --
 class DrumPad {
-  private:
+  protected:
     String name = "pad";
 
     // settings
@@ -41,6 +41,14 @@ class DrumPad {
 
     }
 
+    virtual void hitPad(int velocity) {
+      // send the midi signal via bluetooth
+      sendMIDI(velocity);
+
+      // send signal to analog jack
+      sendAnalog(velocity);
+    }
+
 
   public:
     DrumPad(int p, int n) : pin(p), note(n) {
@@ -51,7 +59,7 @@ class DrumPad {
       pinMode(pin, INPUT);
     }
 
-    void listen() {
+    virtual void listen() {
       int sensorValue = analogRead(pin);
       unsigned long now = millis();
 
@@ -75,11 +83,8 @@ class DrumPad {
         int velocity = map(currentPeak, threshold, 4095, 20, 127);
         if (velocity > 127) velocity = 127;
 
-        // send the midi signal via bluetooth
-        sendMIDI(velocity);
-
-        // send signal to analog jack
-        sendAnalog(velocity);
+        // "hit" the pad
+        hitPad(velocity);
 
         isWaitingForPeak = false;
         lastTriggerTime = now;
@@ -101,12 +106,93 @@ class DrumPad {
 };
 
 
+class HiHatPad : public DrumPad {
+  private:
+    const int CLOSED_NOTE = 42;
+    const int OPEN_NOTE = 46;
+    const int PEDAL_NOTE = 44; // the "chick" sound when you close a hi-hat
+    const int SPLASH_NOTE = 46; // the splash sound when an already hit closed hi-hat is released to open
+    
+    const int SPLASH_WINDOW = 200; // the time (in ms) window to trigger the splash
+    unsigned long lastClosedHitTime = 0;
+
+    int pedalPin;
+    int padPin;
+    bool pedalClosed = false;
+    int prevVelocity = 127; // pedal has no piezo so sample the pad's last velocity
+
+    void hitPad(int velocity) override {
+      // send midi signal
+      if (isConnected) {
+        MIDI.sendNoteOn(pedalClosed ? CLOSED_NOTE : OPEN_NOTE, velocity, 1);
+        Serial.printf("Sent! %s %s Pedal Hit! Velocity: %d\n", pedalClosed ? "Closed" : "Open", name, velocity);
+      }
+      else Serial.printf("%s %s Pedal Hit! Velocity: %d\n", pedalClosed ? "Closed" : "Open", name, velocity);
+
+      // send analog signal
+      sendAnalog(velocity); // unimplemented for now
+      
+      prevVelocity = velocity;
+      lastClosedHitTime = millis();
+    }
+
+
+  public:
+    HiHatPad(int padPin, int pedalPin) : DrumPad(padPin, OPEN_NOTE) {
+      this->pedalPin = pedalPin;
+      pinMode(padPin, INPUT);
+      pinMode(pedalPin, INPUT_PULLUP);
+    }
+
+    HiHatPad(int padPin, int pedalPin, int t, int d) : DrumPad(padPin, OPEN_NOTE, t, d) {
+      this->pedalPin = pedalPin;
+      pinMode(padPin, INPUT);
+      pinMode(pedalPin, INPUT_PULLUP);
+    }
+
+    void listen() override {
+      // handle pedal logic first
+      bool pedalPressed = digitalRead(pedalPin) == LOW;
+      
+      // detect press down of pedal
+      if (pedalPressed && !pedalClosed) {
+        if (isConnected) {
+          Serial.printf("Sent! %s Pedal Hit! Velocity: %d\n", name, prevVelocity);
+          MIDI.sendNoteOn(PEDAL_NOTE, prevVelocity, 1);
+        }
+        else Serial.printf("%s Pedal Hit! Velocity: %d\n", name, prevVelocity);
+
+        pedalClosed = true;
+      }
+
+      // detect release of pedal
+      if (!pedalPressed && pedalClosed) {
+        unsigned long timeSinceHit = millis() - lastClosedHitTime;
+        
+        // released the pedal right after hitting
+        if (timeSinceHit < SPLASH_WINDOW) {
+          // send midi signal
+          if (isConnected) {
+            MIDI.sendNoteOn(SPLASH_NOTE, prevVelocity, 1);
+            Serial.printf("Sent! %s Pedal Splashed! Velocity: %d\n", name, prevVelocity);
+          }
+          else Serial.printf("%s Pedal Splashed! Velocity: %d\n", name, prevVelocity);
+        }
+
+        pedalClosed = false;
+      }
+
+      // listen for the hit
+      DrumPad::listen();
+    }
+};
+
+
 // create pad instruments -------------------------------------------------------------------------------------------------------------------------------------------
 DrumPad snarePad(34, 38);
 DrumPad bassPad(35, 36, 300, 100); // pin, midi note, threshold, debounce time
-DrumPad hihatClosePad(32, 42, 50, 80);
-DrumPad hihatOpenPad(33, 46, 50, 80);
 DrumPad tomPad1(36, 48);
+HiHatPad hiHatPad(32, 4);
 
 void setup() {
   Serial.begin(115200);
@@ -116,7 +202,7 @@ void setup() {
 
   snarePad.setName("snare pad");
   bassPad.setName("bass pad");
-  hihatClosePad.setName("hihat pad");
+  hiHatPad.setName("hihat pad");
 
   // setup callbacks to know when Android connects
   BLEMIDI.setHandleConnected([]() { 
@@ -139,7 +225,5 @@ void loop() {
   MIDI.read();
   snarePad.listen();
   bassPad.listen();
-  hihatClosePad.listen();
-  // hihatOpenPad.listen();
-  // tomPad1.listen();
+  hiHatPad.listen();
 }
