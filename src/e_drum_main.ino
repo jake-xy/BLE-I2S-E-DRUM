@@ -4,6 +4,10 @@
 // -- configuration --
 BLEMIDI_CREATE_INSTANCE("Clark_EDrum", MIDI);
 const int PEAK_SAMPLE_TIME = 10; // time (ms) to find the strongest peak
+// control pins connected to S0, S1, S2, S3 pin of the mux
+const int selectPins[4] = {19, 18, 5, 17};
+// the analog input pin connected to SIG pin of the mux
+const int sigPin = 32;
 
 // -- bluetooth variables --
 bool isConnected = false;
@@ -14,9 +18,9 @@ class DrumPad {
     String name = "pad";
 
     // settings
-    int pin;
+    int muxChannel;
     int note;
-    int threshold = 100; // minimum signal to trigger a hit
+    int threshold = 30; // minimum signal to trigger a hit
     int maskTime = 50;  // debounce time (ms) to prevent double triggers
 
     // state variables
@@ -49,18 +53,32 @@ class DrumPad {
       sendAnalog(velocity);
     }
 
-
-  public:
-    DrumPad(int p, int n) : pin(p), note(n) {
-      pinMode(pin, INPUT);
+    void selectMuxChannel(int channel) {
+      for (int i = 0; i < 4; i++) {
+        // read the bits of the channel number and set the pins accordingly
+        int bitValue = bitRead(channel, i);
+        digitalWrite(selectPins[i], bitValue);
+      }
+      // 1 microsecond delay for the multiplexer switch to physically connect
+      delayMicroseconds(1); 
     }
 
-    DrumPad(int p, int n, int t, int debounce) : pin(p), note(n), threshold(t), maskTime(debounce) {
-      pinMode(pin, INPUT);
+
+  public:
+    DrumPad(int c, int n) : muxChannel(c), note(n) {
+      // pinMode(muxChannel, INPUT);
+    }
+
+    DrumPad(int c, int n, int t, int debounce) : muxChannel(c), note(n), threshold(t), maskTime(debounce) {
+      // pinMode(muxChannel, INPUT);
     }
 
     virtual void listen() {
-      int sensorValue = analogRead(pin);
+      // select the channel on the multiplexer
+      selectMuxChannel(muxChannel);
+      
+      // read the analog value from the selected channel
+      int sensorValue = analogRead(sigPin);
       unsigned long now = millis();
 
       // detect initial hit
@@ -80,7 +98,7 @@ class DrumPad {
       // after peak period, send the MIDI signal
       if (now - peakStartTime >= PEAK_SAMPLE_TIME) {
         // map the 12-bit analog read (0-4095) to MIDI velocity (0-127)
-        int velocity = map(currentPeak, threshold, 4095, 20, 127);
+        int velocity = map(currentPeak, threshold, 900, 20, 127);
         if (velocity > 127) velocity = 127;
 
         // "hit" the pad
@@ -115,9 +133,9 @@ class HiHatPad : public DrumPad {
     
     const int SPLASH_WINDOW = 200; // the time (in ms) window to trigger the splash
     unsigned long lastClosedHitTime = 0;
+    unsigned long lastPedalTriggerTime = 0; // implementation of debounce time
 
     int pedalPin;
-    int padPin;
     bool pedalClosed = false;
     int prevVelocity = 127; // pedal has no piezo so sample the pad's last velocity
 
@@ -138,15 +156,15 @@ class HiHatPad : public DrumPad {
 
 
   public:
-    HiHatPad(int padPin, int pedalPin) : DrumPad(padPin, OPEN_NOTE) {
+    HiHatPad(int c, int pedalPin) : DrumPad(c, OPEN_NOTE) {
       this->pedalPin = pedalPin;
-      pinMode(padPin, INPUT);
+      // pinMode(c, INPUT);
       pinMode(pedalPin, INPUT_PULLUP);
     }
 
-    HiHatPad(int padPin, int pedalPin, int t, int d) : DrumPad(padPin, OPEN_NOTE, t, d) {
+    HiHatPad(int c, int pedalPin, int t, int d) : DrumPad(c, OPEN_NOTE, t, d) {
       this->pedalPin = pedalPin;
-      pinMode(padPin, INPUT);
+      // pinMode(c, INPUT);
       pinMode(pedalPin, INPUT_PULLUP);
     }
 
@@ -155,18 +173,19 @@ class HiHatPad : public DrumPad {
       bool pedalPressed = digitalRead(pedalPin) == LOW;
       
       // detect press down of pedal
-      if (pedalPressed && !pedalClosed) {
+      if (pedalPressed && !pedalClosed && (millis() - lastPedalTriggerTime > maskTime)) {
         if (isConnected) {
           Serial.printf("Sent! %s Pedal Hit! Velocity: %d\n", name, prevVelocity);
           MIDI.sendNoteOn(PEDAL_NOTE, prevVelocity, 1);
         }
         else Serial.printf("%s Pedal Hit! Velocity: %d\n", name, prevVelocity);
-
+        
+        lastPedalTriggerTime = millis();
         pedalClosed = true;
       }
 
       // detect release of pedal
-      if (!pedalPressed && pedalClosed) {
+      if (!pedalPressed && pedalClosed && (millis() - lastPedalTriggerTime > maskTime)) {
         unsigned long timeSinceHit = millis() - lastClosedHitTime;
         
         // released the pedal right after hitting
@@ -179,6 +198,7 @@ class HiHatPad : public DrumPad {
           else Serial.printf("%s Pedal Splashed! Velocity: %d\n", name, prevVelocity);
         }
 
+        lastPedalTriggerTime = millis();
         pedalClosed = false;
       }
 
@@ -189,16 +209,26 @@ class HiHatPad : public DrumPad {
 
 
 // create pad instruments -------------------------------------------------------------------------------------------------------------------------------------------
-DrumPad snarePad(34, 38);
-DrumPad bassPad(35, 36, 300, 100); // pin, midi note, threshold, debounce time
-DrumPad tomPad1(36, 48);
-HiHatPad hiHatPad(32, 4);
+HiHatPad hiHatPad(0, 4); // mux channel, pedal pin, threshold, debounce time
+DrumPad snarePad(1, 38); // mux channel, midi note
+DrumPad tomPad1(2, 48);
+DrumPad tomPad2(3, 45);
+DrumPad tomPad3(4, 43);
+DrumPad bassPad(5, 36, 50, 100); // mux channel, midi note, threshold, debounce time
+DrumPad crashPad(6, 55);
+DrumPad ridePad(7, 59);
 
 void setup() {
   Serial.begin(115200);
 
   pinMode(LED_BUILTIN, OUTPUT);
   digitalWrite(LED_BUILTIN, LOW);
+
+  // set the control pins as outputs
+  for (int i = 0; i < 4; i++) {
+    pinMode(selectPins[i], OUTPUT);
+    digitalWrite(selectPins[i], LOW);
+  }
 
   snarePad.setName("snare pad");
   bassPad.setName("bass pad");
@@ -226,4 +256,9 @@ void loop() {
   snarePad.listen();
   bassPad.listen();
   hiHatPad.listen();
+  tomPad1.listen();
+  tomPad2.listen();
+  tomPad3.listen();
+  crashPad.listen();
+  ridePad.listen();
 }
