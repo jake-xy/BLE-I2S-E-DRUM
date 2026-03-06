@@ -20,8 +20,10 @@ class DrumPad {
     // settings
     int muxChannel;
     int note;
-    int threshold = 30; // minimum signal to trigger a hit
-    int maskTime = 50;  // debounce time (ms) to prevent double triggers
+    int threshold = 100; // minimum signal to trigger a hit
+    int maskTime = 10;  // debounce time (ms) to prevent double triggers
+    int minVel = 60;
+    int maxThresh = 1250;
 
     // state variables
     unsigned long lastTriggerTime = 0;
@@ -59,8 +61,12 @@ class DrumPad {
         int bitValue = bitRead(channel, i);
         digitalWrite(selectPins[i], bitValue);
       }
-      // 1 microsecond delay for the multiplexer switch to physically connect
-      delayMicroseconds(1); 
+      // a few microsecond delay for the multiplexer switch to physically connect
+      delayMicroseconds(50);
+
+      // dummy read to flush the internal capacitros of the mcu
+      analogRead(sigPin);
+      analogRead(sigPin);
     }
 
 
@@ -98,7 +104,7 @@ class DrumPad {
       // after peak period, send the MIDI signal
       if (now - peakStartTime >= PEAK_SAMPLE_TIME) {
         // map the 12-bit analog read (0-4095) to MIDI velocity (0-127)
-        int velocity = map(currentPeak, threshold, 900, 20, 127);
+        int velocity = map(currentPeak, threshold, maxThresh, minVel, 127);
         if (velocity > 127) velocity = 127;
 
         // "hit" the pad
@@ -120,6 +126,14 @@ class DrumPad {
 
     void setName(String name) {
       this->name = name;
+    }
+
+    void setMinVel(int vel) {
+      minVel = vel;
+    }
+
+    void setMaxThreshold(int threshold) {
+      maxThresh = threshold;
     }
 };
 
@@ -209,14 +223,14 @@ class HiHatPad : public DrumPad {
 
 
 // create pad instruments -------------------------------------------------------------------------------------------------------------------------------------------
-HiHatPad hiHatPad(0, 4); // mux channel, pedal pin, threshold, debounce time
-DrumPad snarePad(1, 38); // mux channel, midi note
-DrumPad tomPad1(2, 48);
+HiHatPad hiHatPad(0, 4, 600, 25); // mux channel, pedal pin, threshold, debounce time
+DrumPad snarePad(1, 38, 40, 25); // mux channel, midi note, threshold, debounce time
+DrumPad tomPad1(2, 48, 60, 25);
 DrumPad tomPad2(3, 45);
-DrumPad tomPad3(4, 43);
-DrumPad bassPad(5, 36, 50, 100); // mux channel, midi note, threshold, debounce time
-DrumPad crashPad(6, 55);
-DrumPad ridePad(7, 59);
+DrumPad tomPad3(4, 43, 20, 25);
+DrumPad bassPad(5, 36);
+DrumPad crashPad(6, 49, 600, 25);
+DrumPad ridePad(7, 53, 600, 25);
 
 void setup() {
   Serial.begin(115200);
@@ -231,8 +245,13 @@ void setup() {
   }
 
   snarePad.setName("snare pad");
-  bassPad.setName("bass pad");
   hiHatPad.setName("hihat pad");
+  tomPad1.setName("tom pad 1");
+  tomPad2.setName("tom pad 2");
+  tomPad3.setName("tom pad 3");
+  bassPad.setName("bass pad");
+  crashPad.setName("crash pad");
+  ridePad.setName("ride pad");
 
   // setup callbacks to know when Android connects
   BLEMIDI.setHandleConnected([]() { 
