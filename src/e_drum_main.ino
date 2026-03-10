@@ -1,13 +1,32 @@
 #include <BLEMIDI_Transport.h>
 #include <hardware/BLEMIDI_ESP32.h>
+#include <LiquidCrystal_I2C.h>
 
 // -- configuration --
-BLEMIDI_CREATE_INSTANCE("Clark_EDrum", MIDI);
+BLEMIDI_CREATE_INSTANCE("EDrum_Ng_Mama_Mo", MIDI);
 const int PEAK_SAMPLE_TIME = 10; // time (ms) to find the strongest peak
 // control pins connected to S0, S1, S2, S3 pin of the mux
 const int selectPins[4] = {19, 18, 5, 17};
 // the analog input pin connected to SIG pin of the mux
 const int sigPin = 32;
+// set address to 0x27 for a 16 chars and 2 line display
+LiquidCrystal_I2C lcd(0x27, 16, 2); // connect to SDA(data) - pin 21, SCL(clock) - pin 22
+// sd card module pin out
+const int mosiPin = 23;
+const int misoPin = 19;
+const int sckPin = 18;
+const int csPin = 5;
+// navigation/buttons pinout
+const int upButtonPin = 33;
+const int okButtonPin = 27;
+const int downButtonPin = 14;
+const int hihatPedalPin = 4; // button to "close"/"open" the hi-hat
+const int kickPedalPin = 15; // optional to use e-edal to trigger kick drum
+// audio output pin (PCM5102a DAC) sck - gnd, gnd - gnd, vin - vin
+const int bckPin = 26;
+const int dinPin = 13;
+const int lckPin = 25;
+
 
 // -- bluetooth variables --
 bool isConnected = false;
@@ -140,10 +159,10 @@ class DrumPad {
 
 class HiHatPad : public DrumPad {
   private:
-    const int CLOSED_NOTE = 42;
-    const int OPEN_NOTE = 46;
-    const int PEDAL_NOTE = 44; // the "chick" sound when you close a hi-hat
-    const int SPLASH_NOTE = 46; // the splash sound when an already hit closed hi-hat is released to open
+    static const int CLOSED_NOTE = 42;
+    static const int OPEN_NOTE = 46;
+    static const int PEDAL_NOTE = 44; // the "chick" sound when you close a hi-hat
+    static const int SPLASH_NOTE = 46; // the splash sound when an already hit closed hi-hat is released to open
     
     const int SPLASH_WINDOW = 200; // the time (in ms) window to trigger the splash
     unsigned long lastClosedHitTime = 0;
@@ -184,10 +203,10 @@ class HiHatPad : public DrumPad {
 
     void listen() override {
       // handle pedal logic first
-      bool pedalPressed = digitalRead(pedalPin) == LOW;
+      bool pressingPedal = digitalRead(pedalPin) == LOW;
       
       // detect press down of pedal
-      if (pedalPressed && !pedalClosed && (millis() - lastPedalTriggerTime > maskTime)) {
+      if (pressingPedal && !pedalClosed && (millis() - lastPedalTriggerTime > maskTime)) {
         if (isConnected) {
           Serial.printf("Sent! %s Pedal Hit! Velocity: %d\n", name, prevVelocity);
           MIDI.sendNoteOn(PEDAL_NOTE, prevVelocity, 1);
@@ -199,7 +218,7 @@ class HiHatPad : public DrumPad {
       }
 
       // detect release of pedal
-      if (!pedalPressed && pedalClosed && (millis() - lastPedalTriggerTime > maskTime)) {
+      if (!pressingPedal && pedalClosed && (millis() - lastPedalTriggerTime > maskTime)) {
         unsigned long timeSinceHit = millis() - lastClosedHitTime;
         
         // released the pedal right after hitting
@@ -222,13 +241,51 @@ class HiHatPad : public DrumPad {
 };
 
 
+class BassPad : public DrumPad {
+  private:
+    int pedalPin;
+    bool pedalReleased = true;
+  
+  public:
+    BassPad(int c, int pedalPin, int midiNote) : DrumPad(c, midiNote) {
+      this->pedalPin = pedalPin;
+      pinMode(pedalPin, INPUT_PULLUP);
+    }
+
+    BassPad(int c, int pedalPin, int midiNote, int t, int d) : DrumPad(c, midiNote, t, d) {
+      this->pedalPin = pedalPin;
+      // pinMode(c, INPUT);
+      pinMode(pedalPin, INPUT_PULLUP);
+    }
+
+    void listen() override {
+      // handle pedal logic first
+      bool pressingPedal = digitalRead(pedalPin) == LOW;
+
+      if (pedalReleased && pressingPedal && (millis() - lastTriggerTime > maskTime)) {
+        // "hit" the pad
+        hitPad(127);
+        // update states
+        pedalReleased = false;
+        lastTriggerTime = millis();
+      }
+      else if (!pedalReleased && !pressingPedal) {
+        pedalReleased = true;
+      }
+
+      // listen for hit on the actual drum pad
+      DrumPad::listen();
+    }
+};
+
+
 // create pad instruments -------------------------------------------------------------------------------------------------------------------------------------------
-HiHatPad hiHatPad(0, 4, 400, 25); // mux channel, pedal pin, threshold, debounce time
+HiHatPad hiHatPad(0, hihatPedalPin, 400, 25); // mux channel, pedal pin, threshold, debounce time
 DrumPad snarePad(1, 38, 40, 25); // mux channel, midi note, threshold, debounce time
 DrumPad tomPad1(2, 48, 60, 25);
 DrumPad tomPad2(3, 45);
 DrumPad tomPad3(4, 43, 20, 25);
-DrumPad bassPad(5, 36);
+BassPad bassPad(5, kickPedalPin, 36);
 DrumPad crashPad(6, 49, 400, 25);
 DrumPad ridePad(7, 53, 400, 25);
 
