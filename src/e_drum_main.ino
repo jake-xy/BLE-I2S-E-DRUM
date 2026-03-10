@@ -21,8 +21,8 @@ class DrumPad {
     int muxChannel;
     int note;
     int threshold = 100; // minimum signal to trigger a hit
-    int maskTime = 10;  // debounce time (ms) to prevent double triggers
-    int minVel = 60;
+    int maskTime = 25;  // debounce time (ms) to prevent double triggers
+    int minVel = 45;
     int maxThresh = 1250;
 
     // state variables
@@ -223,14 +223,14 @@ class HiHatPad : public DrumPad {
 
 
 // create pad instruments -------------------------------------------------------------------------------------------------------------------------------------------
-HiHatPad hiHatPad(0, 4, 600, 25); // mux channel, pedal pin, threshold, debounce time
+HiHatPad hiHatPad(0, 4, 400, 25); // mux channel, pedal pin, threshold, debounce time
 DrumPad snarePad(1, 38, 40, 25); // mux channel, midi note, threshold, debounce time
 DrumPad tomPad1(2, 48, 60, 25);
 DrumPad tomPad2(3, 45);
 DrumPad tomPad3(4, 43, 20, 25);
 DrumPad bassPad(5, 36);
-DrumPad crashPad(6, 49, 600, 25);
-DrumPad ridePad(7, 53, 600, 25);
+DrumPad crashPad(6, 49, 400, 25);
+DrumPad ridePad(7, 53, 400, 25);
 
 void setup() {
   Serial.begin(115200);
