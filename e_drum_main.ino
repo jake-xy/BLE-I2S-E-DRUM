@@ -30,6 +30,8 @@ const int lckPin = 25;
 
 Preferences prefs;
 
+  TaskHandle_t MenuTask;
+
 // -- bluetooth variables --
 bool isConnected = false;
 
@@ -181,9 +183,9 @@ class DrumPad {
       if (maxVel <= minVel) maxVel = minVel + 1;
     }
 
-    void setMaxThreshold(int threshold) {
-      maxThresh = threshold;
-      if (maxThresh < threshold+10) maxThresh = threshold + 10;
+    void setMaxThreshold(int newThresh) {
+      maxThresh = newThresh;
+      if (maxThresh < threshold+10) maxThresh = newThresh + 10;
       else if (maxThresh > 4095) maxThresh = 4095;
     }
 
@@ -604,7 +606,7 @@ class LCD_Menu {
         }
         return;
       }
-      else if (!isIdle && millis() - timeSinceLastAction >= 15000) { // 15 seconds to idle
+      else if (!isIdle && millis() - timeSinceLastAction >= 30000) { // 30 seconds to idle
         isIdle = true;
       }
 
@@ -840,7 +842,7 @@ class LCD_Menu {
       }
 
       // -- handle selection blinking ----------------------
-      if (!pressingOk && millis() - timeSinceBlink > (currentMenu == VALUE_EDIT ? 250 : 500)) {
+      if (!isIdle && !pressingOk && millis() - timeSinceBlink > (currentMenu == VALUE_EDIT ? 250 : 500)) {
         if (currentMenu != VALUE_EDIT) {
           lcd.setCursor(0, menuRow);
           lcd.print(blinkBit ? '-' : '>');
@@ -862,6 +864,13 @@ class LCD_Menu {
 };
 
 LCD_Menu lcdMenu;
+
+void menuTaskCode(void *pvParameters) {
+  while (1) {
+    lcdMenu.run();
+    vTaskDelay(10 / portTICK_PERIOD_MS);
+  }
+}
 
 void setup() {
   Serial.begin(115200);
@@ -917,6 +926,17 @@ void setup() {
 
   // lcd menu
   lcdMenu.begin();
+
+  // pin the slow LCD UI to Core 0
+  xTaskCreatePinnedToCore(
+    menuTaskCode,   // task function
+    "MenuTask",     // name of task
+    10000,          // stack size
+    NULL,           // task input parameter
+    1,              // priority of the task
+    &MenuTask,      // task handle
+    0               // pin to Core 0
+  );
 }
 
 void loop() {
@@ -929,6 +949,4 @@ void loop() {
   tomPad3.listen();
   crashPad.listen();
   ridePad.listen();
-
-  lcdMenu.run();
 }
