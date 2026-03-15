@@ -37,6 +37,7 @@ bool isConnected = false;
 struct PadSettings {
   int sensitivity; // 0 - 200 (mapped inversely with the threshold value)
   int minVelocity;
+  int maxVelocity;
   int maskTime;
   int maxThresh;
 };
@@ -52,9 +53,10 @@ class DrumPad {
     int threshold = 100; // minimum signal to trigger a hit
     int maskTime = 25;  // debounce time (ms) to prevent double triggers
     int minVel = 45;
+    int maxVel = 127;
     int maxThresh = 1250;
     int sensitivity = 180;
-    const int MIN_THRESH_FLOOR = 10;
+    const int MIN_THRESH_FLOOR = 5;
 
     // state variables
     unsigned long lastTriggerTime = 0;
@@ -142,7 +144,7 @@ class DrumPad {
       // after peak period, send the MIDI signal
       if (now - peakStartTime >= PEAK_SAMPLE_TIME) {
         // map the 12-bit analog read (0-4095) to MIDI velocity (0-127)
-        int velocity = map(currentPeak, threshold, maxThresh, minVel, 127);
+        int velocity = map(currentPeak, threshold, maxThresh, minVel, maxVel);
         if (velocity > 127) velocity = 127;
 
         // "hit" the pad
@@ -170,6 +172,13 @@ class DrumPad {
     void setMinVel(int vel) {
       minVel = vel;
       if (minVel > 127) minVel = 127;
+      if (minVel > maxVel) minVel = maxVel - 1; 
+    }
+
+    void setMaxVel(int vel) {
+      maxVel = vel;
+      if (maxVel > 127) maxVel = 127;
+      if (maxVel <= minVel) maxVel = minVel + 1;
     }
 
     void setMaxThreshold(int threshold) {
@@ -193,6 +202,10 @@ class DrumPad {
       return minVel;
     }
 
+    int getMaxVelocity() {
+      return maxVel;
+    }
+
     int getMaskTime() {
       return maskTime;
     }
@@ -201,10 +214,15 @@ class DrumPad {
       return maxThresh;
     }
 
+    String getName() {
+      return name;
+    }
+
     void loadOrSaveConfig(String key) {
       configKey = key;
 
-      PadSettings cfg = {sensitivity, minVel, maskTime, maxThresh};
+      // save current(deafault) pad config to PadSettings
+      PadSettings cfg = {sensitivity, minVel, maxVel, maskTime, maxThresh};
 
       prefs.begin("edrum", false);
 
@@ -214,6 +232,7 @@ class DrumPad {
 
         sensitivity = cfg.sensitivity;
         minVel = cfg.minVelocity;
+        maxVel = cfg.maxVelocity;
         maskTime = cfg.maskTime;
         maxThresh = cfg.maxThresh;
 
@@ -232,7 +251,7 @@ class DrumPad {
     }
 
     void saveNewConfig() {
-      PadSettings cfg = {sensitivity, minVel, maskTime, maxThresh};
+      PadSettings cfg = {sensitivity, minVel, maxVel, maskTime, maxThresh};
 
       prefs.begin("edrum", false);
       prefs.putBytes(configKey.c_str(), &cfg, sizeof(PadSettings));
@@ -403,6 +422,11 @@ class LCD_Menu {
     String editingValueStr = "";
     int editingValue = -1;
 
+    // idle animation
+    unsigned long lastFrameTime = 0;
+    int frame = 0;
+    int direction = 1;
+
     DrumPad* getPadByMenuIndex(int index) {
       switch (index) {
         case 1: return &hiHatPad;
@@ -452,6 +476,7 @@ class LCD_Menu {
         {
           "-SENSITIVITY",
           "-MIN VELOCITY",
+          "-MX VELOCITY",
           "-MASK TIME",
           "-MAX THRESH"
         },
@@ -468,6 +493,17 @@ class LCD_Menu {
     void begin() {
       lcd.init();
       lcd.backlight();
+
+      // custom characters for idle animation
+      byte pulse1[8] = {0,0,0,0,0,0,0,0}; // empty
+      byte pulse2[8] = {0,0,0,0,4,0,0,0}; // tiny dot
+      byte pulse3[8] = {0,0,4,14,4,0,0,0}; // small diamond
+      byte pulse4[8] = {0,4,14,31,14,4,0,0}; // full pulse
+
+      lcd.createChar(0, pulse1);
+      lcd.createChar(1, pulse2);
+      lcd.createChar(2, pulse3);
+      lcd.createChar(3, pulse4);
 
       pinMode(upButtonPin, INPUT_PULLUP);
       pinMode(okButtonPin, INPUT_PULLUP);
@@ -533,18 +569,45 @@ class LCD_Menu {
       bool pressingDown = digitalRead(downButtonPin) == LOW;
 
       if (isIdle) {
+        // animation logic
+        if (millis() - lastFrameTime > 200) {  
+          lcd.setCursor(0, 0);
+          lcd.print("                ");
+          lcd.setCursor(0, 1);
+          lcd.print("                ");
+          for (int c = 0; c < 16; c++) {
+            lcd.setCursor(c, 0);
+            lcd.write(frame);
+            lcd.setCursor(c, 1);
+            lcd.write(frame);
+          }
+          lcd.setCursor(14, 0);
+          lcd.write(frame); // draw the custom pulsing character
+          
+          frame += direction;
+          if (frame >= 3 || frame <= 0) direction *= -1; // reverse pulse
+
+          lastFrameTime = millis();
+        }
+
+        if (!pressedDown && pressingDown) pressedDown = true;
+        if (!pressedUp && pressingUp) pressedUp = true;
+        if (!pressedOk && pressingOk) pressedOk = true;
+
         // handle any action to get out of idle
-        if (pressingUp || pressingDown || pressingOk) {
+        if ( (!pressingUp&&pressedUp) || (!pressingDown&&pressedDown) || (!pressingOk&&pressedOk)) {
           isIdle = false;
-          lcd.backlight();
+          lcd.clear();
+          navigateDisplay(0); // refresh menu text
           timeSinceLastAction = millis();
+          pressedUp = false; pressedDown = false; pressedOk = false;
         }
         return;
       }
       else if (!isIdle && millis() - timeSinceLastAction >= 15000) { // 15 seconds to idle
-        lcd.noBacklight();
         isIdle = true;
       }
+
 
       // -- up button --------------------------
       if (pressingUp && !pressedUp) {
@@ -593,13 +656,21 @@ class LCD_Menu {
               value = String(pad->getMinVelocity());
               menu[PAD_EDIT][1] = "-MIN VELOCITY " + (value.length() == 1 ? "0"+value : value); // clamps string value to 2 decimal places
               
+              // maximum velocity
+              value = String(pad->getMaxVelocity());
+              switch (value.length()) {
+                case 1: value = "00" + value; break;
+                case 2: value = "0" + value; break;
+              } // clamps string value to 3 decimal places
+              menu[PAD_EDIT][2] = "-MX VELOCITY " + value;
+              
               // mask time (debounce time)
               value = String(pad->getMaskTime());
               switch (value.length()) {
                 case 1: value = "00" + value; break;
                 case 2: value = "0" + value; break;
               } // clamps string value to 3 decimal places
-              menu[PAD_EDIT][2] = "-MASK TIME " + value;
+              menu[PAD_EDIT][3] = "-MASK TIME " + value;
               
               // maximum threshold
               value = String(pad->getMaxThresh());
@@ -608,7 +679,7 @@ class LCD_Menu {
                 case 2: value = "00" + value; break;
                 case 3: value = "0" + value; break;
               } // clamps string value to 4 decimal places
-              menu[PAD_EDIT][3] = "-MAX THRESH " + value;
+              menu[PAD_EDIT][4] = "-MAX THRESH " + value;
             }
 
             // actually switch screen
@@ -643,6 +714,15 @@ class LCD_Menu {
                 menu[VALUE_EDIT][1] = "NEW VALUE   : " + editingValueStr;
                 break;
               case 2:
+                editingValueStr = String(pad->getMaxVelocity());
+                switch (editingValueStr.length()) { // forces to 3 decimal places
+                  case 1: editingValueStr = "00" + editingValueStr; break;
+                  case 2: editingValueStr = "0" + editingValueStr; break;
+                }
+                menu[VALUE_EDIT][0] = "MAX VELOCITY:" + editingValueStr;
+                menu[VALUE_EDIT][1] = "NEW VALUE   :" + editingValueStr;
+                break;
+              case 3:
                 editingValueStr = String(pad->getMaskTime());
                 switch (editingValueStr.length()) { // forces to 3 decimal places
                   case 1: editingValueStr = "00" + editingValueStr; break;
@@ -651,7 +731,7 @@ class LCD_Menu {
                 menu[VALUE_EDIT][0] = "MASK TIME : " + editingValueStr;
                 menu[VALUE_EDIT][1] = "NEW VALUE : " + editingValueStr;
                 break;
-              case 3:
+              case 4:
                 editingValueStr = String(pad->getMaxThresh());
                 switch (editingValueStr.length()) { // forces to 3 decimal places
                   case 1: editingValueStr = "000" + editingValueStr; break;
@@ -706,13 +786,17 @@ class LCD_Menu {
                 pad->setMinVel(editingValueStr.toInt()); 
                 menu[PAD_EDIT][1] = "-MIN VELOCITY " + String(pad->getMinVelocity());
                 break;
-              case 2: 
-                pad->setDebounceTime(editingValueStr.toInt()); 
-                menu[PAD_EDIT][2] = "-MASK TIME " + String(pad->getMaskTime());
+              case 2:
+                pad->setMaxVel(editingValueStr.toInt()); 
+                menu[PAD_EDIT][2] = "-MX VELOCITY " + String(pad->getMaxVelocity());
                 break;
               case 3: 
+                pad->setDebounceTime(editingValueStr.toInt()); 
+                menu[PAD_EDIT][3] = "-MASK TIME " + String(pad->getMaskTime());
+                break;
+              case 4: 
                 pad->setMaxThreshold(editingValueStr.toInt()); 
-                menu[PAD_EDIT][3] = "-MAX THRESH " + String(pad->getMaxThresh());
+                menu[PAD_EDIT][4] = "-MAX THRESH " + String(pad->getMaxThresh());
                 break;
             }
 
@@ -726,7 +810,7 @@ class LCD_Menu {
               // save the modified values to the config
               DrumPad *pad = getPadByMenuIndex(prevMenuIndex);
               pad->saveNewConfig();
-              Serial.println("I am being saved");
+              Serial.println("saved config for " + pad->getName());
             }
             currentMenu = prevMenu;
             menuIndex = prevMenuIndex;
@@ -817,6 +901,7 @@ void setup() {
   BLEMIDI.setHandleConnected([]() { 
     isConnected = true;
     LCD_Menu::menu[0][0] = "- KIT: BLTH MODE";
+    lcdMenu.navigateDisplay(0);
     digitalWrite(LED_BUILTIN, HIGH);
     Serial.println("Bluetooth Connected!");
   });
